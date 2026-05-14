@@ -373,24 +373,33 @@ std::string generate_filename(const SlpGame& game, const std::string& original_n
 
 int main(int argc, char* argv[]) {
     bool dry_run = false;
+    bool recursive = false;
     std::string target;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "-n") dry_run = true;
+        else if (arg == "-r") recursive = true;
         else             target  = arg;
     }
 
     if (target.empty()) {
-        std::cerr << "Usage: " << argv[0] << " [-n] <file.slp | directory>\n";
+        std::cerr << "Usage: " << argv[0] << " [-n] [-r] <file.slp | directory>\n";
         return 1;
     }
 
     std::vector<fs::path> files;
     if (fs::is_directory(target)) {
-        for (auto& entry : fs::directory_iterator(target)) {
-            if (entry.path().extension() == ".slp")
-                files.push_back(entry.path());
+        if (recursive) {
+            for (auto& entry : fs::recursive_directory_iterator(target)) {
+                if (entry.path().extension() == ".slp")
+                    files.push_back(entry.path());
+            }
+        } else {
+            for (auto& entry : fs::directory_iterator(target)) {
+                if (entry.path().extension() == ".slp")
+                    files.push_back(entry.path());
+            }
         }
         std::sort(files.begin(), files.end());
     } else {

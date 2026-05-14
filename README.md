@@ -1,24 +1,58 @@
 # slippi-cpp-renamer
 
-A C++ command-line tool for parsing, renaming, and analyzing [Slippi](https://slippi.gg) `.slp` replay files for Super Smash Bros. Melee.
+A C++ command-line tool for renaming and analyzing [Slippi](https://slippi.gg) `.slp` replay files for Super Smash Bros. Melee.
 
 ## What it does
 
-Reads the binary header of a `.slp` replay file and extracts game metadata:
+Renames `.slp` replay files to a clean, human-readable format using metadata extracted from the binary file header:
 
-- Slippi version
-- Stage
-- Per-player info: character, display name, stock count, costume
+```
+20240322T231153 - Falco (KillemDafoe) vs Fox (Red,kev11) - Final Destination.slp
+```
+
+Extracted per file:
+- Timestamp (from filename or metadata)
+- Stage name
+- Per-player: character, costume color, nametag, netplay display name
+
+## Usage
+
+```
+./slippi-parser [-n] [-r] <file.slp | directory>
+```
+
+| Flag | Description |
+|------|-------------|
+| `-n` | Dry run — print what would be renamed without making changes |
+| `-r` | Recurse into subdirectories |
+
+### Examples
+
+Rename a single file:
+```
+./slippi-parser Game_20240322T231153.slp
+```
+
+Dry-run a whole folder:
+```
+./slippi-parser -n /path/to/replays
+```
+
+Recursively rename all replays under a directory:
+```
+./slippi-parser -r /path/to/replays
+```
 
 ## Planned features
 
-- **Batch rename** — rename a folder of replays to a clean, human-readable format (e.g. `2024-01-15_Fox-vs-Marth_Battlefield.slp`)
 - **Replay filtering** — search a folder of replays by character, stage, or opponent
 - **Session stats** — print win/loss record, most played characters and stages across a session
 
 ## Why C++
 
 Slippi replay files use a custom binary format (UBJSON wrapper + raw event stream). Parsing them in C++ produces a single native binary with no runtime dependencies — no Node.js, no Python install required. Just download and run.
+
+The parser only reads the file header and metadata tail, skipping the large frame data block in the middle. This makes batch processing fast even on large replay collections.
 
 A JavaScript-based renamer already exists ([slippi-renamer](https://github.com/mtimkovich/slippi-renamer)). This project is a C++ alternative focused on performance and zero-dependency distribution.
 
@@ -28,23 +62,6 @@ Requires a C++17 compiler.
 
 ```
 make
-```
-
-## Usage
-
-```
-./slippi-parser <file.slp>
-```
-
-Example output:
-```
-Version:  3.17.0
-Stage:    Battlefield (0x1F)
-Teams:    No
-PAL:      No
-
-Port 1:   Kevlar  |  Fox  |  type=Human  |  stocks=4  |  costume=2
-Port 4:   nxr     |  Fox  |  type=Human  |  stocks=4  |  costume=3
 ```
 
 ## File format
