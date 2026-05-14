@@ -302,6 +302,8 @@ std::string date_prefix(const std::string& filename, const std::string& start_at
     }
     if (!start_at.empty()) {
         std::string ts = start_at;
+        auto dot = ts.find('.');
+        if (dot != std::string::npos) ts.erase(dot);
         ts.erase(std::remove(ts.begin(), ts.end(), '-'), ts.end());
         ts.erase(std::remove(ts.begin(), ts.end(), ':'), ts.end());
         if (!ts.empty() && ts.back() == 'Z') ts.pop_back();
