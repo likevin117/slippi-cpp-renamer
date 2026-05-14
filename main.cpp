@@ -29,7 +29,8 @@ struct PlayerInfo {
     uint8_t team_id    = 0;
     std::string nametag;
     std::string display_name;
-    std::string netplay_name;  // from metadata UBJSON
+    std::string netplay_name;   // from metadata UBJSON
+    std::string connect_code;   // e.g. "KEV#123" (version 3.9.0+)
 };
 
 struct SlpGame {
@@ -37,7 +38,14 @@ struct SlpGame {
     uint16_t stage_id   = 0;
     bool     is_teams   = false;
     PlayerInfo players[4];
-    std::string start_at;      // ISO timestamp from metadata
+    std::string start_at;           // ISO timestamp from metadata
+    uint16_t game_end_payload_size = 0;
+};
+
+struct GameEnd {
+    uint8_t method    = 0;               // 1=TIME, 2=GAME, 7=NO_CONTEST
+    int8_t  lras_port = -1;              // port that quit, -1 if none
+    int8_t  placements[4] = {-1,-1,-1,-1}; // 0=winner; -1=unknown
 };
 
 // ─── Lookup tables ────────────────────────────────────────────────────────────
@@ -220,6 +228,7 @@ bool parse_slp(const uint8_t* head, size_t head_size,
         uint8_t cmd        = raw[2 + 3 * i];
         payload_sizes[cmd] = read_u16(raw + 3 + 3 * i);
     }
+    game.game_end_payload_size = payload_sizes[0x39];
 
     // Scan for Game Start event (0x36) within the head buffer
     size_t pos = 1 + payloads_block_size;
@@ -254,6 +263,13 @@ bool parse_slp(const uint8_t* head, size_t head_size,
                 const uint8_t* dn = ev + 0x1A5 + 31 * i;
                 for (int j = 0; j < 30 && dn[j]; j++)
                     p.display_name += static_cast<char>(dn[j]);
+
+                // Connect code: 10-byte UTF-8 at event[0x221 + 10*i] (version 3.9.0+)
+                if (payload_sizes[0x36] >= static_cast<uint16_t>(0x22A + 10 * i)) {
+                    const uint8_t* cc = ev + 0x221 + 10 * i;
+                    for (int j = 0; j < 10 && cc[j]; j++)
+                        p.connect_code += static_cast<char>(cc[j]);
+                }
             }
             break;
         }
@@ -286,6 +302,53 @@ bool parse_slp(const uint8_t* head, size_t head_size,
     }
 
     return true;
+}
+
+// ─── Game End / result helpers ────────────────────────────────────────────────
+
+GameEnd parse_game_end(const uint8_t* ev, size_t size, uint16_t payload_size) {
+    GameEnd end;
+    if (size < 3 || ev[0] != 0x39) return end;
+    end.method    = ev[1];
+    end.lras_port = static_cast<int8_t>(ev[2]);
+    if (payload_size >= 6) {
+        for (int i = 0; i < 4; i++)
+            end.placements[i] = static_cast<int8_t>(ev[3 + i]);
+    }
+    return end;
+}
+
+static bool iequal(const std::string& a, const std::string& b) {
+    return a.size() == b.size() &&
+           std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               return std::tolower((unsigned char)x) == std::tolower((unsigned char)y);
+           });
+}
+
+// Returns 'W', 'L', or 0 if me_tag doesn't match any player in this game.
+char match_result(const SlpGame& game, const GameEnd& end, const std::string& me_tag) {
+    if (me_tag.empty()) return 0;
+
+    int my_port = -1;
+    for (int i = 0; i < 4; i++) {
+        const PlayerInfo& p = game.players[i];
+        if (p.type == 3) continue;
+        if (iequal(p.nametag, me_tag) || iequal(p.netplay_name, me_tag) ||
+            iequal(p.connect_code, me_tag) || iequal(p.display_name, me_tag)) {
+            my_port = i;
+            break;
+        }
+    }
+    if (my_port == -1) return 0;
+
+    if (end.method == 2) {           // GAME — use placements
+        if (end.placements[my_port] == 0) return 'W';
+        if (end.placements[my_port] >  0) return 'L';
+    } else if (end.method == 7) {    // NO_CONTEST — someone quit
+        if (end.lras_port == my_port) return 'L';
+        if (end.lras_port >= 0)       return 'W';
+    }
+    return 0;
 }
 
 // ─── Filename generation ──────────────────────────────────────────────────────
@@ -338,7 +401,7 @@ std::string player_label(const PlayerInfo& p) {
     return label;
 }
 
-std::string generate_filename(const SlpGame& game, const std::string& original_name) {
+std::string generate_filename(const SlpGame& game, const std::string& original_name, char result = 0) {
     std::string date = date_prefix(original_name, game.start_at);
     if (date.empty()) return "";
 
@@ -368,7 +431,9 @@ std::string generate_filename(const SlpGame& game, const std::string& original_n
         }
     }
 
-    return date + " - " + matchup + " - " + stage_name(game.stage_id) + ".slp";
+    std::string name = date + " - " + matchup + " - " + stage_name(game.stage_id);
+    if (result == 'W' || result == 'L') name += std::string(" - ") + result;
+    return name + ".slp";
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -377,16 +442,18 @@ int main(int argc, char* argv[]) {
     bool dry_run = false;
     bool recursive = false;
     std::string target;
+    std::string me_tag;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "-n") dry_run = true;
         else if (arg == "-r") recursive = true;
+        else if (arg == "--me" && i + 1 < argc) me_tag = argv[++i];
         else             target  = arg;
     }
 
     if (target.empty()) {
-        std::cerr << "Usage: " << argv[0] << " [-n] [-r] <file.slp | directory>\n";
+        std::cerr << "Usage: " << argv[0] << " [-n] [-r] [--me <tag>] <file.slp | directory>\n";
         return 1;
     }
 
@@ -453,7 +520,18 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        std::string new_name = generate_filename(game, path.filename().string());
+        GameEnd game_end;
+        uint16_t ge_size = game.game_end_payload_size;
+        if (ge_size > 0 && meta_offset > static_cast<size_t>(1 + ge_size)) {
+            size_t ge_offset = meta_offset - (1 + ge_size);
+            std::vector<uint8_t> ge_buf(1 + ge_size);
+            file.seekg(static_cast<std::streamoff>(ge_offset));
+            file.read(reinterpret_cast<char*>(ge_buf.data()), 1 + ge_size);
+            game_end = parse_game_end(ge_buf.data(), ge_buf.size(), ge_size);
+        }
+
+        char result = match_result(game, game_end, me_tag);
+        std::string new_name = generate_filename(game, path.filename().string(), result);
         if (new_name.empty()) {
             std::cerr << "Could not generate name for: " << path.filename().string() << "\n";
             failed++;
